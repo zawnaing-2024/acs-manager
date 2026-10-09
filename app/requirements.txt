@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+httpx
+pydantic
+pydantic-settings
+python-multipart
+python-jose[cryptography]
+pyyaml
+passlib[bcrypt]==1.7.4
+python-jose[cryptography]==3.3.0
+python-multipart==0.0.6
