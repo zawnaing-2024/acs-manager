@@ -127,7 +127,9 @@ async def sync_genieacs_to_db(db: AsyncSession, client: GenieACSClient):
 
             ip_address = str(
                 device.get("_ip") or 
-                extract_param(device, "InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1.ExternalIPAddress", "")
+                extract_param(device, "InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1.ExternalIPAddress") or 
+                extract_param(device, "InternetGatewayDevice.WANDevice.1.WANConnectionDevice.2.WANPPPConnection.1.ExternalIPAddress") or
+                extract_param(device, "InternetGatewayDevice.WANDevice.1.WANConnectionDevice.3.WANPPPConnection.1.ExternalIPAddress") 
             )
             mac_address = str(
                 extract_param(device, "InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1.MACAddress", "")
