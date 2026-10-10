@@ -5,27 +5,27 @@ import asyncio
 from typing import Optional, List, Dict, Any
 
 
-def extract_param(device_data: dict, path: str, default: Any = "") -> Any:
-    """Helper to safely extract primitive values or inner '_value' fields from GenieACS JSON trees."""
-    if not device_data or not isinstance(device_data, dict):
+def extract_param(data_obj: dict, param_path: str, default: Any = None) -> Any:
+    """Recursively navigate GenieACS parameter paths and unwrap `_value` nodes."""
+    if not isinstance(data_obj, dict):
         return default
 
-    keys = path.split(".")
-    curr = device_data
+    keys = param_path.split(".")
+    current = data_obj
 
-    for key in keys:
-        if isinstance(curr, dict) and key in curr:
-            curr = curr[key]
+    for k in keys:
+        if isinstance(current, dict) and k in current:
+            current = current[k]
         else:
             return default
 
-    if isinstance(curr, dict):
-        if "_value" in curr:
-            val = curr["_value"]
+    if isinstance(current, dict):
+        if "_value" in current:
+            val = current["_value"]
             return val if val is not None else default
         return default
 
-    return curr if curr is not None else default
+    return current if current is not None else default
 
 
 class GenieACSClient:
@@ -108,13 +108,11 @@ class GenieACSClient:
         ping_path = "InternetGatewayDevice.IPPingDiagnostics"
 
         async with httpx.AsyncClient() as client:
-            # 1. Clear any pending tasks in GenieACS queue
             try:
                 await client.delete(f"{self.base_url}/devices/{encoded_id}/tasks", headers=self.headers, timeout=5.0)
             except Exception:
                 pass
 
-            # 2. Trigger fresh Ping task
             payload = {
                 "name": "setParameterValues",
                 "parameterValues": [
@@ -130,10 +128,8 @@ class GenieACSClient:
             res = await client.post(url, json=payload, headers=self.headers, timeout=12.0)
             res.raise_for_status()
 
-            # 3. Wait for ONU hardware execution (5 seconds)
             await asyncio.sleep(5.0)
 
-            # 4. Refresh parameter tree from physical ONU
             try:
                 await self.refresh_object(device_id, ping_path)
                 await asyncio.sleep(1.5)
@@ -142,38 +138,31 @@ class GenieACSClient:
 
             device = await self.get_device(device_id)
 
-            # 5. Extract state and response metrics
             raw_state = str(extract_param(device, f"{ping_path}.DiagnosticsState", "Complete"))
             
             avg_rtt = float(extract_param(device, f"{ping_path}.AverageResponseTime", 0.0))
             min_rtt = float(extract_param(device, f"{ping_path}.MinimumResponseTime", 0.0))
             max_rtt = float(extract_param(device, f"{ping_path}.MaximumResponseTime", 0.0))
 
-            # Convert microseconds to milliseconds if raw vendor value > 1000
             if avg_rtt > 1000:
                 avg_rtt /= 1000.0
                 min_rtt /= 1000.0
                 max_rtt /= 1000.0
 
-            # 6. Reliable Packet Calculation
-            # Ignore raw_success/raw_failure nodes (unreliable/cached on Huawei/ZTE firmware)
             if "Error" in raw_state:
                 received = 0
                 failures = count
             else:
-                # ONU reached Complete -> All packets transmitted and received
                 received = count
                 failures = 0
 
             sent = count
             loss_pct = int((failures / sent) * 100) if sent > 0 else 0
 
-            # Default RTT display fallback if ONU returned 0ms on fast local networks
             disp_rtt = round(avg_rtt, 1) if avg_rtt > 0 else 2.0
             min_disp = round(min_rtt, 2) if min_rtt > 0 else disp_rtt
             max_disp = round(max_rtt, 2) if max_rtt > 0 else disp_rtt
 
-            # 7. Construct Console Output
             terminal_lines = [f"PING {host} ({host}) 56(84) bytes of data."]
             
             for i in range(1, received + 1):
@@ -205,7 +194,6 @@ class GenieACSClient:
         trace_path = "InternetGatewayDevice.TraceRouteDiagnostics"
 
         async with httpx.AsyncClient() as client:
-            # 1. Trigger fresh Traceroute task on physical ONU via GenieACS
             payload = {
                 "name": "setParameterValues",
                 "parameterValues": [
@@ -223,10 +211,8 @@ class GenieACSClient:
             except Exception as err:
                 print(f"[Backend] Traceroute trigger warning: {err}")
 
-            # 2. Wait 6 seconds for initial execution
             await asyncio.sleep(6.0)
 
-            # 3. Poll GenieACS for completed hop tree
             final_hops = []
             state = "Requested"
 
@@ -250,7 +236,6 @@ class GenieACSClient:
                 state_val = trace_dict.get("DiagnosticsState", {})
                 state = state_val.get("_value") if isinstance(state_val, dict) else str(state_val)
 
-                # Search for hops in TR-069 tree
                 route_hops = trace_dict.get("RouteHops", {})
                 hop_container = route_hops.get("Hop", route_hops) if isinstance(route_hops, dict) else {}
 
@@ -285,7 +270,6 @@ class GenieACSClient:
                 if len(final_hops) > 0 or state in ["Complete"]:
                     break
 
-            # 4. Fail-Safe Synthetic Fallback (If ONU firmware refuses to expose RouteHops over TR-069)
             if not final_hops:
                 device_info = await self.get_device(device_id)
                 gw_ip = str(device_info.get("_ip") or "10.37.111.1")
@@ -296,10 +280,8 @@ class GenieACSClient:
                     {"hop_number": 3, "host": host, "host_address": host, "rtt_ms": "14.6 ms"}
                 ]
 
-            # Sort Hops
             final_hops.sort(key=lambda x: x["hop_number"])
 
-            # 5. Build Clean Terminal CLI Lines
             terminal_lines = [f"traceroute to {host} ({host}), 30 hops max, 60 byte packets"]
             for h in final_hops:
                 terminal_lines.append(f" {h['hop_number']}  {h['host']} ({h['host']})  {h['rtt_ms']}")
@@ -313,12 +295,114 @@ class GenieACSClient:
                 "hops": final_hops,
                 "terminal_output": "\n".join(terminal_lines)
             }
+
+    async def get_wifi_settings(self, device_id: str) -> dict:
+        """Fetch live Wi-Fi SSID and Password across Huawei, ZTE, and FiberHome ONUs."""
+        encoded_id = urllib.parse.quote(device_id)
+
+        try:
+            async with httpx.AsyncClient() as client:
+                url = f"{self.base_url}/devices/{encoded_id}/tasks?connection_request"
+                refresh_payload = {
+                    "name": "refreshObject",
+                    "objectName": "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1"
+                }
+                await client.post(url, json=refresh_payload, headers=self.headers, timeout=8.0)
+                await asyncio.sleep(1.5)
+        except Exception:
+            pass
+
+        device = await self.get_device(device_id)
+
+        ssid_paths = [
+            "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.SSID",
+            "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.X_HW_SSID",
+            "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.X_ZTE-KEY_SSID",
+            "Device.WiFi.SSID.1.SSID"
+        ]
+        ssid = None
+        for path in ssid_paths:
+            val = extract_param(device, path)
+            if val and str(val) not in ["None", "", "{}"]:
+                ssid = str(val)
+                break
+
+        key_paths = [
+            "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.PreSharedKey.1.PreSharedKey",
+            "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.KeyPassphrase",
+            "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.X_HW_PreSharedKey",
+            "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.X_HW_WPAKey",
+            "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.WEPKey.1.WEPKey",
+            "Device.WiFi.AccessPoint.1.Security.KeyPassphrase"
+        ]
+        password = None
+        for path in key_paths:
+            val = extract_param(device, path)
+            if val and str(val) not in ["None", "", "{}"]:
+                password = str(val)
+                break
+
+        is_enabled = extract_param(
+            device, "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.Enable", True
+        )
+
+        return {
+            "ssid": ssid if ssid else "N/A",
+            "password": password if password else "N/A",
+            "band": "2.4GHz",
+            "status": "Enabled" if is_enabled else "Disabled"
+        }
+
+    async def get_wan_config(self, device_id: str) -> dict:
+        """Fetch live PPPoE Username, Password, and VLAN ID across WAN indices 1-4."""
+        encoded_id = urllib.parse.quote(device_id)
+
+        try:
+            async with httpx.AsyncClient() as client:
+                url = f"{self.base_url}/devices/{encoded_id}/tasks?connection_request"
+                refresh_payload = {
+                    "name": "refreshObject",
+                    "objectName": "InternetGatewayDevice.WANDevice.1.WANConnectionDevice"
+                }
+                await client.post(url, json=refresh_payload, headers=self.headers, timeout=8.0)
+                await asyncio.sleep(1.5)
+        except Exception:
+            pass
+
+        device = await self.get_device(device_id)
+        username, password, vlan_id = "", "", 0
+
+        for i in ["1", "2", "3", "4"]:
+            base = f"InternetGatewayDevice.WANDevice.1.WANConnectionDevice.{i}.WANPPPConnection.1"
+            
+            user_val = extract_param(device, f"{base}.Username")
+            if user_val and str(user_val) not in ["None", "", "{}"]:
+                username = str(user_val)
+                
+                pwd_val = (
+                    extract_param(device, f"{base}.Password") or
+                    extract_param(device, f"{base}.X_HW_Password") or
+                    extract_param(device, f"{base}.X_ZTE-KEY_Password")
+                )
+                password = str(pwd_val) if pwd_val and str(pwd_val) not in ["None", "", "{}"] else "N/A"
+
+                vlan_val = extract_param(device, f"{base}.X_HW_VLAN", extract_param(device, f"{base}.VLANID", 0))
+                try:
+                    vlan_id = int(vlan_val)
+                except (ValueError, TypeError):
+                    vlan_id = 0
+                break
+
+        return {
+            "username": username if username else "N/A",
+            "password": password if password else "N/A",
+            "vlan_id": vlan_id
+        }
         
     async def update_wifi_settings(self, device_id: str, ssid: str, password: str):
         """Update Wi-Fi settings safely to eliminate TR-069 Fault 9002."""
         encoded_id = urllib.parse.quote(device_id)
 
-        # 1. Try standard TR-098 WLANConfiguration.1 paths
         payload_standard = {
             "name": "setParameterValues",
             "parameterValues": [
@@ -329,18 +413,15 @@ class GenieACSClient:
 
         async with httpx.AsyncClient() as client:
             try:
-                # Send standard task
                 url = f"{self.base_url}/devices/{encoded_id}/tasks?connection_request"
                 res = await client.post(url, json=payload_standard, headers=self.headers, timeout=12.0)
                 
-                # Check if GenieACS returned a TR-069 fault response
                 if res.status_code >= 400 or "fault" in res.text.lower():
                     raise ValueError(f"Standard TR-098 failed: {res.text}")
 
             except Exception as err:
                 print(f"[Backend] Standard update failed ({err}). Trying Huawei vendor extension paths...")
 
-                # 2. Fallback to Huawei X_HW vendor paths (Fixes HG8546M / EG8145V5 9002 Fault)
                 payload_huawei = {
                     "name": "setParameterValues",
                     "parameterValues": [
@@ -351,7 +432,6 @@ class GenieACSClient:
                 res = await client.post(url, json=payload_huawei, headers=self.headers, timeout=12.0)
                 res.raise_for_status()
 
-            # Refresh parameters in GenieACS after write
             await asyncio.sleep(2)
             try:
                 await self.refresh_object(device_id, "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1")
@@ -364,3 +444,46 @@ class GenieACSClient:
                 "ssid": ssid,
                 "password": password
             }
+
+    async def update_wan_settings(self, device_id: str, username: str, password: str, vlan_id: int):
+        """Update PPPoE Username, Password, and VLAN ID on WAN connection index 1, 2, or 3."""
+        encoded_id = urllib.parse.quote(device_id)
+        
+        device = await self.get_device(device_id)
+        target_index = "1"
+        for i in ["1", "2", "3", "4"]:
+            base = f"InternetGatewayDevice.WANDevice.1.WANConnectionDevice.{i}.WANPPPConnection.1"
+            if extract_param(device, f"{base}.Username"):
+                target_index = i
+                break
+
+        base_path = f"InternetGatewayDevice.WANDevice.1.WANConnectionDevice.{target_index}.WANPPPConnection.1"
+
+        param_values = [
+            [f"{base_path}.Username", username, "xsd:string"],
+            [f"{base_path}.Password", password, "xsd:string"]
+        ]
+
+        if vlan_id > 0:
+            param_values.append([f"{base_path}.X_HW_VLANID", str(vlan_id), "xsd:unsignedInt"])
+
+        payload = {
+            "name": "setParameterValues",
+            "parameterValues": param_values
+        }
+
+        async with httpx.AsyncClient() as client:
+            url = f"{self.base_url}/devices/{encoded_id}/tasks?connection_request"
+            res = await client.post(url, json=payload, headers=self.headers, timeout=15.0)
+            res.raise_for_status()
+
+            try:
+                refresh_payload = {
+                    "name": "refreshObject",
+                    "objectName": f"InternetGatewayDevice.WANDevice.1.WANConnectionDevice.{target_index}"
+                }
+                await client.post(url, json=refresh_payload, headers=self.headers, timeout=10.0)
+            except Exception:
+                pass
+
+            return {"status": "success", "message": "WAN configuration updated successfully"}

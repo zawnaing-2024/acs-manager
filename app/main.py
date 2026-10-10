@@ -22,7 +22,8 @@ from .auth import (
 from .genieacs_client import GenieACSClient, extract_param
 from .schemas import (
     ONUList, WANConfig, WiFiConfig, LANHostResponse, LANHost,
-    PingRequest, PingResponse, TraceRouteRequest, TraceRouteResponse, WiFiUpdateRequest
+    PingRequest, PingResponse, TraceRouteRequest, TraceRouteResponse, 
+    WiFiUpdateRequest, WANUpdateRequest
 )
 
 load_dotenv()
@@ -127,14 +128,16 @@ async def get_onu_list(
             device.get("_ip") or 
             extract_param(
                 device, 
-                "InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1.ExternalIPAddress",
-    
+                "InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1.ExternalIPAddress"
             ) or 
             extract_param(
                 device, 
-                "InternetGatewayDevice.WANDevice.1.WANConnectionDevice.3.WANPPPConnection.1.ExternalIPAddress",
-                "0.0.0.0"
-        )
+                "InternetGatewayDevice.WANDevice.1.WANConnectionDevice.3.WANPPPConnection.1.ExternalIPAddress"
+            ) or
+            extract_param(
+                device, 
+                "InternetGatewayDevice.WANDevice.1.WANConnectionDevice.2.WANPPPConnection.1.ExternalIPAddress"
+            )
         )
 
         # 5. MAC Address
@@ -182,9 +185,9 @@ async def get_onu_list(
 
         is_online = (last_inform_ts > 0) and ((time.time() - last_inform_ts) < 300)
 
-        # 8. PPPoE Username (Checking WAN index 1, 2, 3)
+        # 8. PPPoE Username (Checking WAN index 1, 2, 3, 4)
         pppoe_user = ""
-        for i in ["1", "2", "3"]:
+        for i in ["1", "2", "3", "4"]:
             user_check = extract_param(
                 device, f"InternetGatewayDevice.WANDevice.1.WANConnectionDevice.{i}.WANPPPConnection.1.Username"
             )
@@ -258,42 +261,8 @@ async def get_wifi_settings(
 ):
     try:
         decoded_id = urllib.parse.unquote(device_id)
-        try:
-            await client.refresh_object(decoded_id, "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1")
-            await asyncio.sleep(2)
-        except Exception:
-            pass
-
-        device = await client.get_device(decoded_id)
-
-        ssid = (
-            extract_param(device, "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.SSID") or
-            extract_param(device, "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.X_HW_SSID") or
-            extract_param(device, "Device.WiFi.SSID.1.SSID") or
-            "N/A"
-        )
-
-        password = (
-            extract_param(device, "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.PreSharedKey.1.PreSharedKey") or
-            extract_param(device, "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.KeyPassphrase") or
-            extract_param(device, "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.X_HW_PreSharedKey") or
-            extract_param(device, "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.X_HW_WPAKey") or
-            extract_param(device, "Device.WiFi.AccessPoint.1.Security.KeyPassphrase") or
-            "N/A"
-        )
-
-        is_enabled = extract_param(
-            device, 
-            "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.Enable", 
-            True
-        )
-
-        return WiFiConfig(
-            ssid=str(ssid) if ssid else "N/A",
-            password=str(password) if password else "N/A",
-            band="2.4GHz",
-            status="Enabled" if is_enabled else "Disabled"
-        )
+        data = await client.get_wifi_settings(decoded_id)
+        return WiFiConfig(**data)
     except Exception as e:
         return WiFiConfig(ssid="N/A", password="N/A", band="2.4GHz", status="Disabled")
 
@@ -320,37 +289,24 @@ async def get_wan_config(
 ):
     try:
         decoded_id = urllib.parse.unquote(device_id)
-        try:
-            await client.refresh_object(decoded_id, "InternetGatewayDevice.WANDevice.1.WANConnectionDevice")
-            await asyncio.sleep(2)
-        except Exception:
-            pass
-
-        device = await client.get_device(decoded_id)
-        username, password, vlan_id = "", "", 0
-
-        for i in ["1", "2", "3"]:
-            base_path = f"InternetGatewayDevice.WANDevice.1.WANConnectionDevice.{i}.WANPPPConnection.1"
-            found_user = extract_param(device, f"{base_path}.Username")
-            if found_user:
-                username = str(found_user)
-                password_val = (
-                    extract_param(device, f"{base_path}.Password") or
-                    extract_param(device, f"{base_path}.X_HW_Password") or
-                    "N/A"
-                )
-                password = str(password_val)
-
-                vlan_id_raw = extract_param(device, f"{base_path}.X_HW_VLANID", 0)
-                try:
-                    vlan_id = int(vlan_id_raw)
-                except (ValueError, TypeError):
-                    vlan_id = 0
-                break
-
-        return WANConfig(username=username, password=password, vlan_id=vlan_id)
+        data = await client.get_wan_config(decoded_id)
+        return WANConfig(**data)
     except Exception as e:
         return WANConfig(username="N/A", password="N/A", vlan_id=0)
+
+
+@app.put("/api/v1/onus/{device_id:path}/wan", tags=["WAN Configuration"])
+async def update_wan_config(
+    device_id: str, 
+    req: WANUpdateRequest, 
+    client: GenieACSClient = Depends(get_genieacs_client),
+    current_user: User = Depends(get_current_user)
+):
+    try:
+        decoded_id = urllib.parse.unquote(device_id)
+        return await client.update_wan_settings(decoded_id, req.username, req.password, req.vlan_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update WAN settings: {str(e)}")
 
 
 @app.get("/api/v1/onus/{device_id:path}/hosts", response_model=LANHostResponse, tags=["LAN Hosts"])
@@ -363,7 +319,7 @@ async def get_lan_hosts(
         decoded_id = urllib.parse.unquote(device_id)
         try:
             await client.refresh_object(decoded_id, "InternetGatewayDevice.LANDevice.1.Hosts.Host")
-            await asyncio.sleep(2)
+            await asyncio.sleep(1.5)
         except Exception:
             pass
 

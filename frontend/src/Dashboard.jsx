@@ -25,6 +25,13 @@ const Dashboard = ({ user, onLogout }) => {
   const [showWifiPassword, setShowWifiPassword] = useState(false);
   const [saveWifiLoading, setSaveWifiLoading] = useState(false);
 
+  // Editable WAN & Password Visibility
+  const [editWanUser, setEditWanUser] = useState('');
+  const [editWanPassword, setEditWanPassword] = useState('');
+  const [editWanVlan, setEditWanVlan] = useState(0);
+  const [showWanPassword, setShowWanPassword] = useState(false);
+  const [saveWanLoading, setSaveWanLoading] = useState(false);
+
   // Diagnostics Modal States
   const [showDiagModal, setShowDiagModal] = useState(false);
   const [diagDevice, setDiagDevice] = useState(null);
@@ -57,7 +64,7 @@ const Dashboard = ({ user, onLogout }) => {
     if (showSpinner) setLoading(true);
     setError(null);
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/v1/onus', {
+      const response = await fetch('/api/v1/onus', {
         headers: getAuthHeaders()
       });
 
@@ -102,10 +109,10 @@ const Dashboard = ({ user, onLogout }) => {
     setPingResult(null);
     setTraceResult(null);
 
-    const encodedId = encodeURIComponent(encodeURIComponent(diagDevice));
+    const encodedId = encodeURIComponent(diagDevice);
     const endpoint = diagType === 'ping' 
-      ? `http://127.0.0.1:8000/api/v1/onus/${encodedId}/diagnostics/ping`
-      : `http://127.0.0.1:8000/api/v1/onus/${encodedId}/diagnostics/traceroute`;
+      ? `/api/v1/onus/${encodedId}/diagnostics/ping`
+      : `/api/v1/onus/${encodedId}/diagnostics/traceroute`;
 
     const bodyData = diagType === 'ping' 
       ? JSON.stringify({ host: targetHost, count: 4 })
@@ -142,7 +149,8 @@ const Dashboard = ({ user, onLogout }) => {
     if (!window.confirm(`Are you sure you want to REBOOT device ${deviceId}?`)) return;
 
     try {
-      const response = await fetch(`http://127.0.0.1:8000/api/v1/onus/${encodeURIComponent(encodeURIComponent(deviceId))}/reboot`, {
+      const encodedId = encodeURIComponent(deviceId);
+      const response = await fetch(`/api/v1/onus/${encodedId}/reboot`, {
         method: 'POST',
         headers: getAuthHeaders()
       });
@@ -167,7 +175,8 @@ const Dashboard = ({ user, onLogout }) => {
 
     try {
       setOnus((prevOnus) => prevOnus.filter((onu) => onu.device_id !== deviceId));
-      const response = await fetch(`http://127.0.0.1:8000/api/v1/onus/${encodeURIComponent(encodeURIComponent(deviceId))}`, {
+      const encodedId = encodeURIComponent(deviceId);
+      const response = await fetch(`/api/v1/onus/${encodedId}`, {
         method: 'DELETE',
         headers: getAuthHeaders()
       });
@@ -197,30 +206,39 @@ const Dashboard = ({ user, onLogout }) => {
     setWanData(null);
     setHostsData(null);
     setShowWifiPassword(false);
+    setShowWanPassword(false);
 
     try {
-      const encodedId = encodeURIComponent(encodeURIComponent(deviceId));
+      const encodedId = encodeURIComponent(deviceId);
       const headers = getAuthHeaders();
 
       const [wifiRes, wanRes, hostsRes] = await Promise.all([
-        fetch(`http://127.0.0.1:8000/api/v1/onus/${encodedId}/wifi`, { headers }),
-        fetch(`http://127.0.0.1:8000/api/v1/onus/${encodedId}/wan`, { headers }),
-        fetch(`http://127.0.0.1:8000/api/v1/onus/${encodedId}/hosts`, { headers })
+        fetch(`/api/v1/onus/${encodedId}/wifi`, { headers }).catch(() => null),
+        fetch(`/api/v1/onus/${encodedId}/wan`, { headers }).catch(() => null),
+        fetch(`/api/v1/onus/${encodedId}/hosts`, { headers }).catch(() => null)
       ]);
 
-      if (handleAuthError(wifiRes) || handleAuthError(wanRes) || handleAuthError(hostsRes)) return;
+      if (wifiRes && wifiRes.ok) {
+        const wifiJson = await wifiRes.json();
+        setWifiData(wifiJson);
+        setEditSsid(wifiJson.ssid && wifiJson.ssid !== 'N/A' ? wifiJson.ssid : '');
+        setEditPassword(wifiJson.password && wifiJson.password !== 'N/A' ? wifiJson.password : '');
+      }
 
-      if (!wifiRes.ok) throw new Error("Failed to fetch Wi-Fi settings");
-      if (!wanRes.ok) throw new Error("Failed to fetch WAN settings");
-      if (!hostsRes.ok) throw new Error("Failed to fetch LAN hosts");
+      if (wanRes && wanRes.ok) {
+        const wanJson = await wanRes.json();
+        setWanData(wanJson);
+        setEditWanUser(wanJson.username && wanJson.username !== 'N/A' ? wanJson.username : '');
+        setEditWanPassword(wanJson.password && wanJson.password !== 'N/A' ? wanJson.password : '');
+        setEditWanVlan(wanJson.vlan_id || 0);
+      }
 
-      const wifiJson = await wifiRes.json();
-      setWifiData(wifiJson);
-      setEditSsid(wifiJson.ssid || '');
-      setEditPassword(wifiJson.password === 'N/A' ? '' : wifiJson.password || '');
+      if (hostsRes && hostsRes.ok) {
+        setHostsData(await hostsRes.json());
+      } else {
+        setHostsData({ total_connected: 0, hosts: [] });
+      }
 
-      setWanData(await wanRes.json());
-      setHostsData(await hostsRes.json());
     } catch (err) {
       setDetailsError(err.message);
     } finally {
@@ -236,8 +254,8 @@ const Dashboard = ({ user, onLogout }) => {
 
     setSaveWifiLoading(true);
     try {
-      const safeDeviceId = encodeURIComponent(encodeURIComponent(selectedDevice));
-      const res = await fetch(`http://127.0.0.1:8000/api/v1/onus/${safeDeviceId}/wifi`, {
+      const safeDeviceId = encodeURIComponent(selectedDevice);
+      const res = await fetch(`/api/v1/onus/${safeDeviceId}/wifi`, {
         method: 'PUT',
         headers: getAuthHeaders(),
         body: JSON.stringify({ ssid: editSsid, password: editPassword })
@@ -256,6 +274,39 @@ const Dashboard = ({ user, onLogout }) => {
       alert(`Error updating Wi-Fi: ${err.message}`);
     } finally {
       setSaveWifiLoading(false);
+    }
+  };
+
+  const handleSaveWan = async () => {
+    if (!editWanUser.trim()) {
+      alert("PPPoE Username cannot be empty.");
+      return;
+    }
+
+    setSaveWanLoading(true);
+    try {
+      const safeDeviceId = encodeURIComponent(selectedDevice);
+      const res = await fetch(`/api/v1/onus/${safeDeviceId}/wan`, {
+        method: 'PUT',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({
+          username: editWanUser,
+          password: editWanPassword,
+          vlan_id: parseInt(editWanVlan) || 0
+        })
+      });
+
+      if (handleAuthError(res)) return;
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Failed to update WAN settings');
+
+      alert("WAN PPPoE Settings updated successfully on the router!");
+      setWanData({ username: editWanUser, password: editWanPassword, vlan_id: editWanVlan });
+      fetchOnus(false);
+    } catch (err) {
+      alert(`Error updating WAN settings: ${err.message}`);
+    } finally {
+      setSaveWanLoading(false);
     }
   };
 
@@ -425,7 +476,7 @@ const Dashboard = ({ user, onLogout }) => {
                           <button 
                             type="button"
                             className="btn btn-sm btn-light border text-primary" 
-                            title="View Details & Update Wi-Fi"
+                            title="View Details & Update Wi-Fi/WAN"
                             onClick={(e) => handleViewDetails(onu.device_id, e)}
                           >
                             <i className="bi bi-info-circle fw-bold"></i>
@@ -546,7 +597,6 @@ const Dashboard = ({ user, onLogout }) => {
                         </span>
                       </h6>
 
-                      {/* Terminal Output Console */}
                       <div 
                         className="p-3 rounded-3 font-monospace small shadow-inner" 
                         style={{ 
@@ -571,7 +621,6 @@ const Dashboard = ({ user, onLogout }) => {
                         </span>
                       </h6>
 
-                      {/* Terminal Console Box */}
                       <div 
                         className="p-3 rounded-3 font-monospace small shadow-inner" 
                         style={{ 
@@ -589,7 +638,9 @@ const Dashboard = ({ user, onLogout }) => {
                 </div>
 
                 <div className="modal-footer bg-white border-top p-3">
-                  <button type="button" className="btn btn-light rounded-pill px-4" onClick={() => setShowDiagModal(false)}>Close</button>
+                  <button type="button" className="btn btn-light rounded-pill px-4 fw-semibold border" onClick={() => setShowDiagModal(false)}>
+                    Close
+                  </button>
                 </div>
               </div>
             </div>
@@ -597,7 +648,8 @@ const Dashboard = ({ user, onLogout }) => {
           <div className="modal-backdrop fade show" onClick={() => setShowDiagModal(false)}></div>
         </>
       )}
-      {/* Details & Wi-Fi Modal */}
+
+      {/* Details, Wi-Fi & WAN Modal */}
       {showModal && (
         <>
           <div className="modal fade show" style={{ display: 'block' }} tabIndex="-1">
@@ -697,35 +749,82 @@ const Dashboard = ({ user, onLogout }) => {
                           </div>
                         </div>
 
-                        {/* WAN Details */}
+                        {/* Editable WAN / PPPoE Card */}
                         <div className="card border-0 shadow-sm rounded-4">
                           <div className="card-header bg-white border-bottom-0 pt-4 pb-0 d-flex align-items-center">
                             <div className="bg-info bg-opacity-10 text-info p-2 rounded-3 me-3">
                               <i className="bi bi-globe2 fs-5"></i>
                             </div>
-                            <h6 className="mb-0 fw-bold">WAN / PPPoE</h6>
+                            <h6 className="mb-0 fw-bold">WAN / PPPoE Configuration</h6>
                           </div>
+                          
                           <div className="card-body">
-                            <ul className="list-group list-group-flush">
-                              <li className="list-group-item px-0 d-flex justify-content-between align-items-center border-0 pb-2">
-                                <span className="text-muted">Username</span>
-                                <span className="fw-semibold text-dark">{wanData?.username || 'N/A'}</span>
-                              </li>
-                              <li className="list-group-item px-0 d-flex justify-content-between align-items-center border-0 pb-2">
-                                <span className="text-muted">Password</span>
-                                <span className="fw-semibold text-dark">
-                                  {wanData?.password === 'N/A' || !wanData?.password 
-                                    ? <span className="badge bg-light text-muted border">Masked</span> 
-                                    : wanData?.password}
-                                </span>
-                              </li>
-                              <li className="list-group-item px-0 d-flex justify-content-between align-items-center border-0">
-                                <span className="text-muted">VLAN ID</span>
-                                {wanData?.vlan_id 
-                                  ? <span className="badge bg-secondary rounded-pill px-3">{wanData.vlan_id}</span> 
-                                  : <span className="text-muted fst-italic">Untagged</span>}
-                              </li>
-                            </ul>
+                            <div className="mb-3">
+                              <label className="form-label fw-semibold text-muted small">PPPoE Username</label>
+                              <div className="input-group">
+                                <span className="input-group-text bg-white"><i className="bi bi-person text-info"></i></span>
+                                <input 
+                                  type="text" 
+                                  className="form-control fw-semibold text-dark" 
+                                  value={editWanUser}
+                                  onChange={(e) => setEditWanUser(e.target.value)}
+                                  placeholder="Enter PPPoE Username"
+                                />
+                              </div>
+                            </div>
+
+                            <div className="mb-3">
+                              <label className="form-label fw-semibold text-muted small">PPPoE Password</label>
+                              <div className="input-group">
+                                <span className="input-group-text bg-white"><i className="bi bi-shield-lock text-info"></i></span>
+                                <input 
+                                  type={showWanPassword ? "text" : "password"} 
+                                  className="form-control font-monospace" 
+                                  value={editWanPassword}
+                                  onChange={(e) => setEditWanPassword(e.target.value)}
+                                  placeholder="Enter Password"
+                                />
+                                <button 
+                                  className="btn btn-outline-secondary" 
+                                  type="button"
+                                  onClick={() => setShowWanPassword(!showWanPassword)}
+                                  title={showWanPassword ? "Hide Password" : "Show Password"}
+                                >
+                                  <i className={`bi bi-eye${showWanPassword ? '-slash' : ''}`}></i>
+                                </button>
+                              </div>
+                            </div>
+
+                            <div className="mb-3">
+                              <label className="form-label fw-semibold text-muted small">VLAN ID</label>
+                              <div className="input-group">
+                                <span className="input-group-text bg-white"><i className="bi bi-tag text-info"></i></span>
+                                <input 
+                                  type="number" 
+                                  className="form-control font-monospace" 
+                                  value={editWanVlan}
+                                  onChange={(e) => setEditWanVlan(e.target.value)}
+                                  placeholder="e.g. 100 or 0 (Untagged)"
+                                />
+                              </div>
+                            </div>
+
+                            <button 
+                              className="btn btn-info text-white w-100 fw-semibold rounded-3 mt-2"
+                              onClick={handleSaveWan}
+                              disabled={saveWanLoading}
+                            >
+                              {saveWanLoading ? (
+                                <>
+                                  <span className="spinner-border spinner-border-sm me-2" role="status"></span>
+                                  Updating Router...
+                                </>
+                              ) : (
+                                <>
+                                  <i className="bi bi-check-lg me-1"></i> Save WAN Settings
+                                </>
+                              )}
+                            </button>
                           </div>
                         </div>
                       </div>
@@ -793,7 +892,7 @@ const Dashboard = ({ user, onLogout }) => {
                 </div>
 
                 <div className="modal-footer bg-white border-top p-3">
-                  <button type= "button" className="btn btn-light rounded-pill px-4 fw-semibold border" onClick={closeModal}>
+                  <button type="button" className="btn btn-light rounded-pill px-4 fw-semibold border" onClick={closeModal}>
                     Close
                   </button>
                 </div>
