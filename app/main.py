@@ -485,13 +485,27 @@ async def get_lan_hosts(
     try:
         decoded_id = urllib.parse.unquote(device_id)
 
-        # 1. Fetch suppressed MAC addresses for this device from MySQL
+        # 1. Fetch suppressed MAC addresses from MySQL
         suppressed_res = await db.execute(
             select(SuppressedHost.mac_address).where(SuppressedHost.device_id == decoded_id)
         )
         suppressed_macs = set(m.lower() for m in suppressed_res.scalars().all())
 
-        # 2. Fetch live hosts from GenieACS
+        # 2. Issue a quick background refresh request to the physical ONU for live ARP/DHCP tables
+        try:
+            encoded_id = urllib.parse.quote(decoded_id)
+            async with httpx.AsyncClient() as http_client:
+                url = f"{client.base_url}/devices/{encoded_id}/tasks?connection_request"
+                refresh_payload = {
+                    "name": "refreshObject",
+                    "objectName": "InternetGatewayDevice.LANDevice.1.Hosts"
+                }
+                await http_client.post(url, json=refresh_payload, headers=client.headers, timeout=5.0)
+                await asyncio.sleep(1.0)
+        except Exception:
+            pass
+
+        # 3. Fetch device tree from GenieACS
         device = await client.get_device(decoded_id)
         hosts_dict = device.get("InternetGatewayDevice", {}).get("LANDevice", {}).get("1", {}).get("Hosts", {}).get("Host", {})
 
@@ -503,20 +517,20 @@ async def get_lan_hosts(
 
                 hostname = extract_param(host_data, "HostName", "Unknown Device")
                 ip_address = extract_param(host_data, "IPAddress", "0.0.0.0")
-                mac_address = extract_param(host_data, "MACAddress", "Unknown MAC")
+                mac_address = extract_param(host_data, "MACAddress", "")
 
-                # Filter out suppressed or invalid MACs
-                if ip_address and ip_address != "0.0.0.0" and str(mac_address).lower() not in suppressed_macs:
+                # Skip blank IPs, loopback, or suppressed MAC addresses
+                if ip_address and ip_address != "0.0.0.0" and mac_address and str(mac_address).lower() not in suppressed_macs:
                     active_hosts.append(LANHost(
-                        hostname=str(hostname),
+                        hostname=str(hostname) if str(hostname) not in ["None", ""] else "LAN / Wi-Fi Device",
                         ip_address=str(ip_address),
                         mac_address=str(mac_address)
                     ))
 
         return LANHostResponse(total_connected=len(active_hosts), hosts=active_hosts)
-    except Exception:
+    except Exception as e:
+        print(f"[Hosts Error] {e}")
         return LANHostResponse(total_connected=0, hosts=[])
-
 
 @app.delete("/api/v1/onus/{device_id:path}/hosts/{mac_address}", tags=["LAN Hosts"])
 async def remove_single_host(
