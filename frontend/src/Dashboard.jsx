@@ -19,13 +19,13 @@ const Dashboard = ({ user, onLogout }) => {
   const [wanData, setWanData] = useState(null);
   const [hostsData, setHostsData] = useState(null);
 
-  // Editable Wi-Fi & Password Visibility
+  // Editable Wi-Fi & Eye Toggle
   const [editSsid, setEditSsid] = useState('');
   const [editPassword, setEditPassword] = useState('');
   const [showWifiPassword, setShowWifiPassword] = useState(false);
   const [saveWifiLoading, setSaveWifiLoading] = useState(false);
 
-  // Editable WAN & Password Visibility
+  // Editable WAN & Eye Toggle
   const [editWanUser, setEditWanUser] = useState('');
   const [editWanPassword, setEditWanPassword] = useState('');
   const [editWanVlan, setEditWanVlan] = useState(0);
@@ -265,7 +265,7 @@ const Dashboard = ({ user, onLogout }) => {
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || 'Failed to update Wi-Fi');
 
-      alert("Wi-Fi SSID and Password updated successfully on the router!");
+      alert("Wi-Fi SSID and Password saved to DB & updated on router!");
       setWifiData(prev => ({ ...prev, ssid: editSsid, password: editPassword }));
       setEditSsid(editSsid);
       setEditPassword(editPassword);
@@ -300,7 +300,7 @@ const Dashboard = ({ user, onLogout }) => {
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || 'Failed to update WAN settings');
 
-      alert("WAN PPPoE Settings updated successfully on the router!");
+      alert("WAN PPPoE Settings saved to DB & updated on router!");
       setWanData({ username: editWanUser, password: editWanPassword, vlan_id: editWanVlan });
       fetchOnus(false);
     } catch (err) {
@@ -338,7 +338,7 @@ const Dashboard = ({ user, onLogout }) => {
         <div className="container-fluid px-4">
           <a className="navbar-brand fw-bold d-flex align-items-center" href="#!">
             <i className="bi bi-router-fill text-primary me-2 fs-4"></i>
-            <span>ACS Manager <span className="badge bg-primary text-white fs-6 ms-1 px-2 py-1">v1</span></span>
+            <span>ACS Manager <span className="badge bg-primary text-white fs-6 ms-1 px-2 py-1">v2 (DB)</span></span>
           </a>
           <div className="d-flex align-items-center gap-3">
             <span className="text-light small">
@@ -403,7 +403,7 @@ const Dashboard = ({ user, onLogout }) => {
         {/* ONU Table */}
         <div className="card border-0 shadow-sm rounded-4 p-4">
           <div className="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-3">
-            <h5 className="mb-0 fw-bold text-dark"><i className="bi bi-list-ul me-2"></i> Managed Devices</h5>
+            <h5 className="mb-0 fw-bold text-dark"><i className="bi bi-database-check me-2 text-primary"></i> Database Managed Devices</h5>
             <div className="input-group shadow-sm" style={{ maxWidth: '350px' }}>
               <span className="input-group-text bg-white border-end-0 text-muted">
                 <i className="bi bi-search"></i>
@@ -436,7 +436,7 @@ const Dashboard = ({ user, onLogout }) => {
               </thead>
               <tbody>
                 {loading && onus.length === 0 ? (
-                  <tr><td colSpan="8" className="text-center text-muted py-5">Loading data...</td></tr>
+                  <tr><td colSpan="8" className="text-center text-muted py-5">Loading database records...</td></tr>
                 ) : filteredOnus.length === 0 ? (
                   <tr>
                     <td colSpan="8" className="text-center text-muted py-5">
@@ -476,7 +476,7 @@ const Dashboard = ({ user, onLogout }) => {
                           <button 
                             type="button"
                             className="btn btn-sm btn-light border text-primary" 
-                            title="View Details & Update Wi-Fi/WAN"
+                            title="View Details & Update Passwords"
                             onClick={(e) => handleViewDetails(onu.device_id, e)}
                           >
                             <i className="bi bi-info-circle fw-bold"></i>
@@ -657,7 +657,7 @@ const Dashboard = ({ user, onLogout }) => {
               <div className="modal-content border-0 shadow-lg rounded-4 overflow-hidden">
                 <div className="modal-header bg-white border-bottom p-4">
                   <div>
-                    <h4 className="modal-title fw-bold text-dark mb-1">Device Information</h4>
+                    <h4 className="modal-title fw-bold text-dark mb-1">Device Information & Database Credentials</h4>
                     <p className="text-muted small mb-0 font-monospace">ID: {selectedDevice}</p>
                   </div>
                   <button type="button" className="btn-close shadow-none" onClick={closeModal}></button>
@@ -667,8 +667,8 @@ const Dashboard = ({ user, onLogout }) => {
                   {detailsLoading ? (
                     <div className="d-flex flex-column align-items-center justify-content-center py-5">
                       <div className="spinner-border text-primary mb-3" style={{ width: '3rem', height: '3rem' }} role="status"></div>
-                      <h5 className="text-dark fw-semibold">Fetching Live Data</h5>
-                      <p className="text-muted">Contacting physical router... (~3 seconds)</p>
+                      <h5 className="text-dark fw-semibold">Fetching Database Records</h5>
+                      <p className="text-muted">Loading credentials from MySQL...</p>
                     </div>
                   ) : detailsError ? (
                     <div className="alert alert-danger rounded-3 d-flex align-items-center p-4">
@@ -709,7 +709,7 @@ const Dashboard = ({ user, onLogout }) => {
                             </div>
 
                             <div className="mb-3">
-                              <label className="form-label fw-semibold text-muted small">Wi-Fi Password</label>
+                              <label className="form-label fw-semibold text-muted small">Wi-Fi Password (Unmaskable)</label>
                               <div className="input-group">
                                 <span className="input-group-text bg-white"><i className="bi bi-key text-primary"></i></span>
                                 <input 
@@ -738,7 +738,7 @@ const Dashboard = ({ user, onLogout }) => {
                               {saveWifiLoading ? (
                                 <>
                                   <span className="spinner-border spinner-border-sm me-2" role="status"></span>
-                                  Updating Router...
+                                  Updating DB & Router...
                                 </>
                               ) : (
                                 <>
@@ -774,7 +774,7 @@ const Dashboard = ({ user, onLogout }) => {
                             </div>
 
                             <div className="mb-3">
-                              <label className="form-label fw-semibold text-muted small">PPPoE Password</label>
+                              <label className="form-label fw-semibold text-muted small">PPPoE Password (Unmaskable)</label>
                               <div className="input-group">
                                 <span className="input-group-text bg-white"><i className="bi bi-shield-lock text-info"></i></span>
                                 <input 
@@ -817,7 +817,7 @@ const Dashboard = ({ user, onLogout }) => {
                               {saveWanLoading ? (
                                 <>
                                   <span className="spinner-border spinner-border-sm me-2" role="status"></span>
-                                  Updating Router...
+                                  Updating DB & Router...
                                 </>
                               ) : (
                                 <>
@@ -907,7 +907,7 @@ const Dashboard = ({ user, onLogout }) => {
       <footer className="bg-white border-top py-3 mt-auto">
         <div className="container-fluid px-4 text-center">
           <span className="text-muted small">
-            ACS Manager v1 — Authorized by ZN
+            ACS Manager v2 (Database Edition) — Authorized by ZN
           </span>
         </div>
       </footer>
