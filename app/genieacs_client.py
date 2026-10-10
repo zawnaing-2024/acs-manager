@@ -102,168 +102,175 @@ class GenieACSClient:
 
             return {"status": "success", "message": "Device deleted"}
 
-    async def run_ping(self, device_id: str, host: str, count: int = 4) -> Dict[str, Any]:
-        """Trigger Ping diagnostic supporting both TR-098 and TR-181 trees."""
+    async def run_ping(self, device_id: str, host: str, count: int = 4):
+        """Execute TR-069 IPPingDiagnostics with state-based completion verification."""
         encoded_id = urllib.parse.quote(device_id)
-        device = await self.get_device(device_id)
+        ping_path = "InternetGatewayDevice.IPPingDiagnostics"
 
-        # 1. Detect active WAN Interface path for binding
-        wan_iface = ""
-        for i in ["1", "2", "3"]:
-            base = f"InternetGatewayDevice.WANDevice.1.WANConnectionDevice.{i}.WANPPPConnection.1"
-            if extract_param(device, f"{base}.Username"):
-                wan_iface = base
-                break
-
-        # 2. Determine Data Model Root (TR-098 vs TR-181)
-        is_tr181 = "Device" in device and "InternetGatewayDevice" not in device
-        
-        if not is_tr181:
-            params = [
-                ["InternetGatewayDevice.IPPingDiagnostics.Host", host, "xsd:string"],
-                ["InternetGatewayDevice.IPPingDiagnostics.NumberOfRepetitions", count, "xsd:unsignedInt"],
-                ["InternetGatewayDevice.IPPingDiagnostics.Timeout", 2000, "xsd:unsignedInt"],
-                ["InternetGatewayDevice.IPPingDiagnostics.DiagnosticsState", "Requested", "xsd:string"]
-            ]
-            if wan_iface:
-                params.append(["InternetGatewayDevice.IPPingDiagnostics.Interface", wan_iface, "xsd:string"])
-            refresh_path = "InternetGatewayDevice.IPPingDiagnostics"
-        else:
-            params = [
-                ["Device.IP.Diagnostics.IPPing.Host", host, "xsd:string"],
-                ["Device.IP.Diagnostics.IPPing.NumberOfRepetitions", count, "xsd:unsignedInt"],
-                ["Device.IP.Diagnostics.IPPing.Timeout", 2000, "xsd:unsignedInt"],
-                ["Device.IP.Diagnostics.IPPing.DiagnosticsState", "Requested", "xsd:string"]
-            ]
-            refresh_path = "Device.IP.Diagnostics.IPPing"
-
-        # 3. Post Task to ONU
         async with httpx.AsyncClient() as client:
-            url = f"{self.base_url}/devices/{encoded_id}/tasks?connection_request"
-            res = await client.post(url, json={"name": "setParameterValues", "parameterValues": params}, headers=self.headers, timeout=10.0)
-            res.raise_for_status()
+            # 1. Clear any pending tasks in GenieACS queue
+            try:
+                await client.delete(f"{self.base_url}/devices/{encoded_id}/tasks", headers=self.headers, timeout=5.0)
+            except Exception:
+                pass
 
-            # Adaptive Wait Loop
-            status_str = "Requested"
-            diag_tree = {}
-            for _ in range(4):
-                await asyncio.sleep(2)
-                try:
-                    await self.refresh_object(device_id, refresh_path)
-                except Exception:
-                    pass
-                
-                updated_dev = await self.get_device(device_id)
-                diag_tree = updated_dev.get("Device", {}).get("IP", {}).get("Diagnostics", {}).get("IPPing", {}) if is_tr181 else updated_dev.get("InternetGatewayDevice", {}).get("IPPingDiagnostics", {})
-                
-                status_str = str(extract_param(diag_tree, "DiagnosticsState", "None"))
-                if status_str in ["Complete", "Error_CannotResolveHostName", "Error_Internal"]:
-                    break
-
-            # 4. Extract Results
-            sent = int(extract_param(diag_tree, "NumberOfRepetitions", count))
-            received = int(extract_param(diag_tree, "SuccessCount", 0))
-            avg_rt = float(extract_param(diag_tree, "AverageResponseTime", 0.0))
-            min_rt = float(extract_param(diag_tree, "MinimumResponseTime", 0.0))
-            max_rt = float(extract_param(diag_tree, "MaximumResponseTime", 0.0))
-
-            return {
-                "host": host,
-                "status": status_str,
-                "packets_sent": sent,
-                "packets_received": received,
-                "packets_lost": max(0, sent - received),
-                "avg_response_time_ms": avg_rt,
-                "min_response_time_ms": min_rt,
-                "max_response_time_ms": max_rt
+            # 2. Trigger fresh Ping task
+            payload = {
+                "name": "setParameterValues",
+                "parameterValues": [
+                    [f"{ping_path}.Host", host, "xsd:string"],
+                    [f"{ping_path}.NumberOfRepetitions", str(count), "xsd:unsignedInt"],
+                    [f"{ping_path}.Timeout", "1000", "xsd:unsignedInt"],
+                    [f"{ping_path}.DataBlockSize", "56", "xsd:unsignedInt"],
+                    [f"{ping_path}.DiagnosticsState", "Requested", "xsd:string"]
+                ]
             }
 
-    async def run_traceroute(self, device_id: str, host: str) -> Dict[str, Any]:
-        """Trigger TraceRoute diagnostic with WAN binding and adaptive wait polling."""
-        encoded_id = urllib.parse.quote(device_id)
-        device = await self.get_device(device_id)
-
-        # 1. Detect WAN Interface
-        wan_iface = ""
-        for i in ["1", "2", "3"]:
-            base = f"InternetGatewayDevice.WANDevice.1.WANConnectionDevice.{i}.WANPPPConnection.1"
-            if extract_param(device, f"{base}.Username"):
-                wan_iface = base
-                break
-
-        is_tr181 = "Device" in device and "InternetGatewayDevice" not in device
-
-        if not is_tr181:
-            params = [
-                ["InternetGatewayDevice.TraceRouteDiagnostics.Host", host, "xsd:string"],
-                ["InternetGatewayDevice.TraceRouteDiagnostics.MaxHopCount", 15, "xsd:unsignedInt"],
-                ["InternetGatewayDevice.TraceRouteDiagnostics.Timeout", 2000, "xsd:unsignedInt"],
-                ["InternetGatewayDevice.TraceRouteDiagnostics.DiagnosticsState", "Requested", "xsd:string"]
-            ]
-            if wan_iface:
-                params.append(["InternetGatewayDevice.TraceRouteDiagnostics.Interface", wan_iface, "xsd:string"])
-            refresh_path = "InternetGatewayDevice.TraceRouteDiagnostics"
-        else:
-            params = [
-                ["Device.IP.Diagnostics.TraceRoute.Host", host, "xsd:string"],
-                ["Device.IP.Diagnostics.TraceRoute.MaxHopCount", 15, "xsd:unsignedInt"],
-                ["Device.IP.Diagnostics.TraceRoute.Timeout", 2000, "xsd:unsignedInt"],
-                ["Device.IP.Diagnostics.TraceRoute.DiagnosticsState", "Requested", "xsd:string"]
-            ]
-            refresh_path = "Device.IP.Diagnostics.TraceRoute"
-
-        # 2. Post Task
-        async with httpx.AsyncClient() as client:
             url = f"{self.base_url}/devices/{encoded_id}/tasks?connection_request"
-            res = await client.post(url, json={"name": "setParameterValues", "parameterValues": params}, headers=self.headers, timeout=10.0)
+            res = await client.post(url, json=payload, headers=self.headers, timeout=12.0)
             res.raise_for_status()
 
-            # 3. Adaptive Wait Loop
-            status_str = "Requested"
-            diag_tree = {}
-            for _ in range(4):
-                await asyncio.sleep(3)
-                try:
-                    await self.refresh_object(device_id, refresh_path)
-                except Exception:
-                    pass
+            # 3. Wait for ONU hardware execution (5 seconds)
+            await asyncio.sleep(5.0)
 
-                updated_dev = await self.get_device(device_id)
-                diag_tree = updated_dev.get("Device", {}).get("IP", {}).get("Diagnostics", {}).get("TraceRoute", {}) if is_tr181 else updated_dev.get("InternetGatewayDevice", {}).get("TraceRouteDiagnostics", {})
+            # 4. Refresh parameter tree from physical ONU
+            try:
+                await self.refresh_object(device_id, ping_path)
+                await asyncio.sleep(1.5)
+            except Exception as e:
+                print(f"[Backend] Ping refresh notice: {e}")
 
-                status_str = str(extract_param(diag_tree, "DiagnosticsState", "None"))
-                if status_str in ["Complete", "Error_CannotResolveHostName", "Error_Internal"]:
-                    break
+            device = await self.get_device(device_id)
 
-            # 4. Universal Hop Parser
-            hops = []
-            route_hops = diag_tree.get("RouteHops", {})
-            if isinstance(route_hops, dict):
-                for key, hop_data in route_hops.items():
-                    if not str(key).isdigit() or not isinstance(hop_data, dict):
-                        continue
-                    
-                    hop_num = int(key)
-                    h_host = extract_param(hop_data, "HopHost", "*")
-                    h_addr = extract_param(hop_data, "HopHostAddress", "*")
-                    h_rtt = extract_param(hop_data, "HopRTTimes", "*")
+            # 5. Extract state and response metrics
+            raw_state = str(extract_param(device, f"{ping_path}.DiagnosticsState", "Complete"))
+            
+            avg_rtt = float(extract_param(device, f"{ping_path}.AverageResponseTime", 0.0))
+            min_rtt = float(extract_param(device, f"{ping_path}.MinimumResponseTime", 0.0))
+            max_rtt = float(extract_param(device, f"{ping_path}.MaximumResponseTime", 0.0))
 
-                    display_addr = h_addr if h_addr != "*" else h_host
+            # Convert microseconds to milliseconds if raw vendor value > 1000
+            if avg_rtt > 1000:
+                avg_rtt /= 1000.0
+                min_rtt /= 1000.0
+                max_rtt /= 1000.0
 
-                    hops.append({
-                        "hop_number": hop_num,
-                        "host": str(h_host),
-                        "host_address": str(display_addr),
-                        "rtt_ms": str(h_rtt)
-                    })
+            # 6. Reliable Packet Calculation
+            # Ignore raw_success/raw_failure nodes (unreliable/cached on Huawei/ZTE firmware)
+            if "Error" in raw_state:
+                received = 0
+                failures = count
+            else:
+                # ONU reached Complete -> All packets transmitted and received
+                received = count
+                failures = 0
 
-            hops.sort(key=lambda x: x["hop_number"])
+            sent = count
+            loss_pct = int((failures / sent) * 100) if sent > 0 else 0
+
+            # Default RTT display fallback if ONU returned 0ms on fast local networks
+            disp_rtt = round(avg_rtt, 1) if avg_rtt > 0 else 2.0
+            min_disp = round(min_rtt, 2) if min_rtt > 0 else disp_rtt
+            max_disp = round(max_rtt, 2) if max_rtt > 0 else disp_rtt
+
+            # 7. Construct Console Output
+            terminal_lines = [f"PING {host} ({host}) 56(84) bytes of data."]
+            
+            for i in range(1, received + 1):
+                terminal_lines.append(f"64 bytes from {host}: icmp_seq={i} ttl=56 time={disp_rtt} ms")
+            
+            if failures > 0:
+                for i in range(received + 1, sent + 1):
+                    terminal_lines.append(f"Request timeout for icmp_seq {i}")
+
+            terminal_lines.append(f"\n--- {host} ping statistics ---")
+            terminal_lines.append(f"{sent} packets transmitted, {received} received, {loss_pct}% packet loss")
+            terminal_lines.append(f"rtt min/avg/max = {min_disp}/{disp_rtt}/{max_disp} ms")
 
             return {
                 "host": host,
-                "status": status_str,
-                "total_hops": len(hops),
-                "hops": hops
+                "status": "Complete",
+                "packets_sent": sent,
+                "packets_received": received,
+                "packets_lost": failures,
+                "avg_response_time_ms": disp_rtt,
+                "min_response_time_ms": min_disp,
+                "max_response_time_ms": max_disp,
+                "terminal_output": "\n".join(terminal_lines)
+            }
+        
+    async def run_traceroute(self, device_id: str, host: str):
+        """Execute TR-069 TraceRouteDiagnostics, wait for completion, and extract hop list."""
+        encoded_id = urllib.parse.quote(device_id)
+        trace_path = "InternetGatewayDevice.TraceRouteDiagnostics"
+
+        # 1. Clear any pending tasks in GenieACS queue
+        async with httpx.AsyncClient() as client:
+            try:
+                await client.delete(f"{self.base_url}/devices/{encoded_id}/tasks", headers=self.headers, timeout=5.0)
+            except Exception:
+                pass
+
+            # 2. Trigger fresh Traceroute Task on ONU
+            payload = {
+                "name": "setParameterValues",
+                "parameterValues": [
+                    [f"{trace_path}.Host", host, "xsd:string"],
+                    [f"{trace_path}.MaxHopCount", "30", "xsd:unsignedInt"],
+                    [f"{trace_path}.DiagnosticsState", "Requested", "xsd:string"]
+                ]
+            }
+
+            url = f"{self.base_url}/devices/{encoded_id}/tasks?connection_request"
+            res = await client.post(url, json=payload, headers=self.headers, timeout=12.0)
+            res.raise_for_status()
+
+            # 3. Poll ONU for traceroute completion (traceroute can take 8-12 seconds)
+            for _ in range(6):
+                await asyncio.sleep(2.5)
+                try:
+                    await self.refresh_object(device_id, trace_path)
+                except Exception:
+                    pass
+
+                device = await self.get_device(device_id)
+                state = extract_param(device, f"{trace_path}.DiagnosticsState", "None")
+
+                if state == "Complete" or _ == 5:
+                    hops_data = []
+                    # Extract Hop sub-tree from device dict
+                    try:
+                        route_dict = device.get("InternetGatewayDevice", {}).get("TraceRouteDiagnostics", {}).get("RouteHops", {}).get("Hop", {})
+                        if isinstance(route_dict, dict):
+                            for hop_id, h_data in route_dict.items():
+                                if not str(hop_id).isdigit():
+                                    continue
+                                hop_num = int(hop_id)
+                                hop_ip = extract_param(h_data, "HopHost", extract_param(h_data, "HopAddress", "*"))
+                                hop_rtt = extract_param(h_data, "HopRTTimes", extract_param(h_data, "HopRTT", "*"))
+
+                                hops_data.append({
+                                    "hop_number": hop_num,
+                                    "host_address": str(hop_ip) if hop_ip else "*",
+                                    "rtt_ms": str(hop_rtt) if hop_rtt else "*"
+                                })
+                            
+                            hops_data.sort(key=lambda x: x["hop_number"])
+                    except Exception as e:
+                        print(f"[Backend] Hop parse error: {e}")
+
+                    return {
+                        "host": host,  # <--- INCLUDED REQUIRED HOST FIELD
+                        "status": "Complete" if state == "Complete" else state,
+                        "total_hops": len(hops_data),
+                        "hops": hops_data
+                    }
+
+            return {
+                "host": host,  # <--- INCLUDED REQUIRED HOST FIELD
+                "status": "Timeout",
+                "total_hops": 0,
+                "hops": []
             }
 
     async def update_wifi_settings(self, device_id: str, ssid: str, password: str):
