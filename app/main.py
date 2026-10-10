@@ -491,45 +491,76 @@ async def get_lan_hosts(
         )
         suppressed_macs = set(m.lower() for m in suppressed_res.scalars().all())
 
-        # 2. Issue a quick background refresh request to the physical ONU for live ARP/DHCP tables
+        # 2. Trigger live refresh on the physical router
         try:
             encoded_id = urllib.parse.quote(decoded_id)
             async with httpx.AsyncClient() as http_client:
                 url = f"{client.base_url}/devices/{encoded_id}/tasks?connection_request"
-                refresh_payload = {
-                    "name": "refreshObject",
-                    "objectName": "InternetGatewayDevice.LANDevice.1.Hosts"
-                }
-                await http_client.post(url, json=refresh_payload, headers=client.headers, timeout=5.0)
+                await http_client.post(
+                    url, 
+                    json={"name": "refreshObject", "objectName": "InternetGatewayDevice.LANDevice.1.Hosts"}, 
+                    headers=client.headers, 
+                    timeout=3.0
+                )
                 await asyncio.sleep(1.0)
         except Exception:
             pass
 
         # 3. Fetch device tree from GenieACS
         device = await client.get_device(decoded_id)
-        hosts_dict = device.get("InternetGatewayDevice", {}).get("LANDevice", {}).get("1", {}).get("Hosts", {}).get("Host", {})
+        
+        # Path A: Standard TR-069 LANDevice Hosts
+        hosts_dict = (
+            device.get("InternetGatewayDevice", {}).get("LANDevice", {}).get("1", {}).get("Hosts", {}).get("Host", {}) or
+            device.get("Device", {}).get("Hosts", {}).get("Host", {})
+        )
 
         active_hosts = []
+
         if isinstance(hosts_dict, dict):
             for host_id, host_data in hosts_dict.items():
-                if not str(host_id).isdigit():
+                if not isinstance(host_data, dict):
                     continue
 
-                hostname = extract_param(host_data, "HostName", "Unknown Device")
-                ip_address = extract_param(host_data, "IPAddress", "0.0.0.0")
+                hostname = (
+                    extract_param(host_data, "HostName") or 
+                    extract_param(host_data, "X_HW_HostName") or 
+                    "Connected Device"
+                )
+                ip_address = (
+                    extract_param(host_data, "IPAddress") or 
+                    extract_param(host_data, "IPv4Address") or 
+                    "0.0.0.0"
+                )
                 mac_address = extract_param(host_data, "MACAddress", "")
 
-                # Skip blank IPs, loopback, or suppressed MAC addresses
-                if ip_address and ip_address != "0.0.0.0" and mac_address and str(mac_address).lower() not in suppressed_macs:
-                    active_hosts.append(LANHost(
-                        hostname=str(hostname) if str(hostname) not in ["None", ""] else "LAN / Wi-Fi Device",
-                        ip_address=str(ip_address),
-                        mac_address=str(mac_address)
-                    ))
+                if ip_address and str(ip_address) not in ["0.0.0.0", "None", ""] and mac_address:
+                    clean_mac = str(mac_address).lower()
+                    if clean_mac not in suppressed_macs:
+                        active_hosts.append(LANHost(
+                            hostname=str(hostname) if str(hostname) not in ["None", ""] else "Connected Device",
+                            ip_address=str(ip_address),
+                            mac_address=str(mac_address)
+                        ))
+
+        # Path B: Fallback check for Wi-Fi Associated Stations if LAN Hosts is empty
+        if len(active_hosts) == 0:
+            wlan_assoc = device.get("InternetGatewayDevice", {}).get("LANDevice", {}).get("1", {}).get("WLANConfiguration", {}).get("1", {}).get("AssociatedDevice", {})
+            if isinstance(wlan_assoc, dict):
+                for assoc_id, assoc_data in wlan_assoc.items():
+                    if isinstance(assoc_data, dict):
+                        mac = extract_param(assoc_data, "AssociatedDeviceMACAddress") or extract_param(assoc_data, "MACAddress")
+                        ip = extract_param(assoc_data, "AssociatedDeviceIPAddress", "DHCP Client")
+                        if mac and str(mac).lower() not in suppressed_macs:
+                            active_hosts.append(LANHost(
+                                hostname="Wi-Fi Client",
+                                ip_address=str(ip),
+                                mac_address=str(mac)
+                            ))
 
         return LANHostResponse(total_connected=len(active_hosts), hosts=active_hosts)
     except Exception as e:
-        print(f"[Hosts Error] {e}")
+        print(f"[Hosts Fetch Error] {e}")
         return LANHostResponse(total_connected=0, hosts=[])
 
 @app.delete("/api/v1/onus/{device_id:path}/hosts/{mac_address}", tags=["LAN Hosts"])
