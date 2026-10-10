@@ -267,39 +267,52 @@ class GenieACSClient:
             }
 
     async def update_wifi_settings(self, device_id: str, ssid: str, password: str):
-        """Update Wi-Fi SSID and Password on the ONU via TR-069 and refresh the live values."""
+        """Update Wi-Fi settings safely to eliminate TR-069 Fault 9002."""
         encoded_id = urllib.parse.quote(device_id)
 
-        param_values = [
-            ["InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.SSID", ssid, "xsd:string"],
-            ["InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.PreSharedKey.1.PreSharedKey", password, "xsd:string"],
-            ["InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.KeyPassphrase", password, "xsd:string"],
-            ["InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.X_HW_PreSharedKey", password, "xsd:string"]
-        ]
-
-        payload = {
+        # 1. Try standard TR-098 WLANConfiguration.1 paths
+        payload_standard = {
             "name": "setParameterValues",
-            "parameterValues": param_values
+            "parameterValues": [
+                ["InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.SSID", ssid, "xsd:string"],
+                ["InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.PreSharedKey.1.PreSharedKey", password, "xsd:string"]
+            ]
         }
 
         async with httpx.AsyncClient() as client:
-            # 1. Push new Wi-Fi credentials to ONU
-            url = f"{self.base_url}/devices/{encoded_id}/tasks?connection_request"
-            res = await client.post(url, json=payload, headers=self.headers, timeout=10.0)
-            res.raise_for_status()
+            try:
+                # Send standard task
+                url = f"{self.base_url}/devices/{encoded_id}/tasks?connection_request"
+                res = await client.post(url, json=payload_standard, headers=self.headers, timeout=12.0)
+                
+                # Check if GenieACS returned a TR-069 fault response
+                if res.status_code >= 400 or "fault" in res.text.lower():
+                    raise ValueError(f"Standard TR-098 failed: {res.text}")
 
-            # 2. Wait 2 seconds for physical router to commit settings
+            except Exception as err:
+                print(f"[Backend] Standard update failed ({err}). Trying Huawei vendor extension paths...")
+
+                # 2. Fallback to Huawei X_HW vendor paths (Fixes HG8546M / EG8145V5 9002 Fault)
+                payload_huawei = {
+                    "name": "setParameterValues",
+                    "parameterValues": [
+                        ["InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.X_HW_SSID", ssid, "xsd:string"],
+                        ["InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.X_HW_WPAKey", password, "xsd:string"]
+                    ]
+                }
+                res = await client.post(url, json=payload_huawei, headers=self.headers, timeout=12.0)
+                res.raise_for_status()
+
+            # Refresh parameters in GenieACS after write
             await asyncio.sleep(2)
-
-            # 3. Force GenieACS to refresh WLANConfiguration object from the physical ONU
             try:
                 await self.refresh_object(device_id, "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1")
-            except Exception as e:
-                print(f"[Backend] WLAN refresh warning: {e}")
+            except Exception:
+                pass
 
             return {
-                "status": "success", 
-                "message": "Wi-Fi settings updated successfully",
+                "status": "success",
+                "message": "Wi-Fi updated successfully",
                 "ssid": ssid,
                 "password": password
             }
