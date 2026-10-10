@@ -58,6 +58,7 @@ class PingResponse(BaseModel):
     avg_response_time_ms: float
     min_response_time_ms: float
     max_response_time_ms: float
+    terminal_output: Optional[str] = None
 
 class TraceRouteHop(BaseModel):
     hop_number: int

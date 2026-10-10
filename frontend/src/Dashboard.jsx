@@ -539,40 +539,25 @@ const Dashboard = ({ user, onLogout }) => {
 
                   {pingResult && (
                     <div className="card border-0 shadow-sm rounded-4 p-4 bg-white">
-                      <h6 className="fw-bold border-bottom pb-2 mb-3 text-primary">
-                        <i className="bi bi-reception-4 me-2"></i> Ping Diagnostic Result
+                      <h6 className="fw-bold border-bottom pb-2 mb-3 text-primary d-flex justify-content-between align-items-center">
+                        <span><i className="bi bi-terminal-fill me-2"></i> ONU Ping Console</span>
+                        <span className={`badge rounded-pill bg-${pingResult.packets_lost === 0 ? 'success' : 'danger'}`}>
+                          {pingResult.packets_lost === 0 ? '0% Packet Loss' : `${pingResult.packets_lost} Packets Lost`}
+                        </span>
                       </h6>
-                      <div className="row text-center g-3 mb-3">
-                        <div className="col-3">
-                          <div className="p-2 bg-light rounded-3">
-                            <small className="text-muted d-block">Sent</small>
-                            <span className="fw-bold">{pingResult.packets_sent}</span>
-                          </div>
-                        </div>
-                        <div className="col-3">
-                          <div className="p-2 bg-light rounded-3">
-                            <small className="text-muted d-block">Received</small>
-                            <span className="fw-bold text-success">{pingResult.packets_received}</span>
-                          </div>
-                        </div>
-                        <div className="col-3">
-                          <div className="p-2 bg-light rounded-3">
-                            <small className="text-muted d-block">Lost</small>
-                            <span className={`fw-bold ${pingResult.packets_lost > 0 ? 'text-danger' : 'text-dark'}`}>
-                              {pingResult.packets_lost}
-                            </span>
-                          </div>
-                        </div>
-                        <div className="col-3">
-                          <div className="p-2 bg-light rounded-3">
-                            <small className="text-muted d-block">Avg RTT</small>
-                            <span className="fw-bold text-primary">{pingResult.avg_response_time_ms} ms</span>
-                          </div>
-                        </div>
-                      </div>
-                      <div className="small text-muted font-monospace bg-dark p-3 rounded-3" style={{ color: '#00ff66' }}>
-                        <div>Status: {pingResult.status}</div>
-                        <div>Min RTT: {pingResult.min_response_time_ms} ms | Max RTT: {pingResult.max_response_time_ms} ms</div>
+
+                      {/* Terminal Output Console */}
+                      <div 
+                        className="p-3 rounded-3 font-monospace small shadow-inner" 
+                        style={{ 
+                          backgroundColor: '#0d1117', 
+                          color: '#39ff14', 
+                          minHeight: '180px', 
+                          whiteSpace: 'pre-wrap', 
+                          lineHeight: '1.5' 
+                        }}
+                      >
+                        {pingResult.terminal_output || `PING ${pingResult.host} statistics:\nSent: ${pingResult.packets_sent}, Received: ${pingResult.packets_received}`}
                       </div>
                     </div>
                   )}
@@ -839,7 +824,7 @@ const Dashboard = ({ user, onLogout }) => {
                 </div>
 
                 <div className="modal-footer bg-white border-top p-3">
-                  <button type="button" className="btn btn-light rounded-pill px-4 fw-semibold border" onClick={closeModal}>
+                  <button type= "button" className="btn btn-light rounded-pill px-4 fw-semibold border" onClick={closeModal}>
                     Close
                   </button>
                 </div>
