@@ -200,23 +200,24 @@ class GenieACSClient:
             }
         
     async def run_traceroute(self, device_id: str, host: str):
-        """Execute TR-069 TraceRouteDiagnostics, wait for completion, and extract hop list."""
+        """Execute TR-069 TraceRouteDiagnostics with recursive hop tree extraction."""
         encoded_id = urllib.parse.quote(device_id)
         trace_path = "InternetGatewayDevice.TraceRouteDiagnostics"
 
-        # 1. Clear any pending tasks in GenieACS queue
         async with httpx.AsyncClient() as client:
+            # 1. Clear any stuck tasks in GenieACS queue
             try:
                 await client.delete(f"{self.base_url}/devices/{encoded_id}/tasks", headers=self.headers, timeout=5.0)
             except Exception:
                 pass
 
-            # 2. Trigger fresh Traceroute Task on ONU
+            # 2. Trigger fresh Traceroute task
             payload = {
                 "name": "setParameterValues",
                 "parameterValues": [
                     [f"{trace_path}.Host", host, "xsd:string"],
                     [f"{trace_path}.MaxHopCount", "30", "xsd:unsignedInt"],
+                    [f"{trace_path}.Timeout", "3000", "xsd:unsignedInt"],
                     [f"{trace_path}.DiagnosticsState", "Requested", "xsd:string"]
                 ]
             }
@@ -225,54 +226,81 @@ class GenieACSClient:
             res = await client.post(url, json=payload, headers=self.headers, timeout=12.0)
             res.raise_for_status()
 
-            # 3. Poll ONU for traceroute completion (traceroute can take 8-12 seconds)
-            for _ in range(6):
-                await asyncio.sleep(2.5)
-                try:
-                    await self.refresh_object(device_id, trace_path)
-                except Exception:
-                    pass
+            # 3. Wait for execution (traceroute takes ~8 to 10 seconds)
+            await asyncio.sleep(8.0)
 
-                device = await self.get_device(device_id)
-                state = extract_param(device, f"{trace_path}.DiagnosticsState", "None")
+            # 4. Force refresh of the TraceRoute tree from the physical ONU
+            try:
+                await self.refresh_object(device_id, trace_path)
+                await asyncio.sleep(2.0)
+            except Exception as e:
+                print(f"[Backend] Traceroute refresh notice: {e}")
 
-                if state == "Complete" or _ == 5:
-                    hops_data = []
-                    # Extract Hop sub-tree from device dict
-                    try:
-                        route_dict = device.get("InternetGatewayDevice", {}).get("TraceRouteDiagnostics", {}).get("RouteHops", {}).get("Hop", {})
-                        if isinstance(route_dict, dict):
-                            for hop_id, h_data in route_dict.items():
-                                if not str(hop_id).isdigit():
-                                    continue
-                                hop_num = int(hop_id)
-                                hop_ip = extract_param(h_data, "HopHost", extract_param(h_data, "HopAddress", "*"))
-                                hop_rtt = extract_param(h_data, "HopRTTimes", extract_param(h_data, "HopRTT", "*"))
+            device = await self.get_device(device_id)
+            state = str(extract_param(device, f"{trace_path}.DiagnosticsState", "Complete"))
 
-                                hops_data.append({
-                                    "hop_number": hop_num,
-                                    "host_address": str(hop_ip) if hop_ip else "*",
-                                    "rtt_ms": str(hop_rtt) if hop_rtt else "*"
-                                })
-                            
-                            hops_data.sort(key=lambda x: x["hop_number"])
-                    except Exception as e:
-                        print(f"[Backend] Hop parse error: {e}")
+            # 5. Recursive Hop Parser
+            hops_data = []
 
-                    return {
-                        "host": host,  # <--- INCLUDED REQUIRED HOST FIELD
-                        "status": "Complete" if state == "Complete" else state,
-                        "total_hops": len(hops_data),
-                        "hops": hops_data
-                    }
+            def find_hops(node, current_path=""):
+                """Recursively traverse device dict to locate any hop structures."""
+                if not isinstance(node, dict):
+                    return
+
+                # Check if current node is a Hop structure
+                has_host = any(k in node for k in ["HopHost", "HopAddress", "HopHostAddress"])
+                has_rtt = any(k in node for k in ["HopRTTimes", "HopRTT", "HopResponseTime"])
+
+                if has_host or has_rtt:
+                    parts = [p for p in current_path.split('.') if p.isdigit()]
+                    hop_num = int(parts[-1]) if parts else (len(hops_data) + 1)
+
+                    hop_host = extract_param(node, "HopHost", 
+                               extract_param(node, "HopAddress", 
+                               extract_param(node, "HopHostAddress", "*")))
+                    
+                    hop_rtt = extract_param(node, "HopRTTimes", 
+                              extract_param(node, "HopRTT", 
+                              extract_param(node, "HopResponseTime", "*")))
+
+                    rtt_str = str(hop_rtt).strip()
+                    if rtt_str.isdigit() and int(rtt_str) > 1000:
+                        rtt_str = f"{round(int(rtt_str) / 1000.0, 1)} ms"
+                    elif rtt_str.isdigit():
+                        rtt_str = f"{rtt_str} ms"
+
+                    host_val = str(hop_host) if hop_host and hop_host != "None" else "*"
+
+                    hops_data.append({
+                        "hop_number": hop_num,
+                        "host": host_val,
+                        "host_address": host_val,
+                        "rtt_ms": rtt_str if rtt_str and rtt_str != "None" else "*"
+                    })
+                    return
+
+                for k, v in node.items():
+                    if isinstance(v, dict) and k != "_object":
+                        find_hops(v, f"{current_path}.{k}" if current_path else k)
+
+            trace_dict = device.get("InternetGatewayDevice", {}).get("TraceRouteDiagnostics", {})
+            find_hops(trace_dict)
+
+            hops_data.sort(key=lambda x: x["hop_number"])
+
+            unique_hops = {}
+            for h in hops_data:
+                unique_hops[h["hop_number"]] = h
+            final_hops = list(unique_hops.values())
+            final_hops.sort(key=lambda x: x["hop_number"])
 
             return {
-                "host": host,  # <--- INCLUDED REQUIRED HOST FIELD
-                "status": "Timeout",
-                "total_hops": 0,
-                "hops": []
+                "host": host,
+                "status": state,
+                "total_hops": len(final_hops),
+                "hops": final_hops
             }
-
+        
     async def update_wifi_settings(self, device_id: str, ssid: str, password: str):
         """Update Wi-Fi settings safely to eliminate TR-069 Fault 9002."""
         encoded_id = urllib.parse.quote(device_id)

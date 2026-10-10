@@ -60,10 +60,10 @@ class PingResponse(BaseModel):
     max_response_time_ms: float
     terminal_output: Optional[str] = None
 
-class TraceRouteHop(BaseModel):
+class TracerouteHop(BaseModel):
     hop_number: int
     host: str
-    host_address: str
+    host_address: Optional[str] = None
     rtt_ms: str
 
 class TraceRouteRequest(BaseModel):
@@ -73,7 +73,7 @@ class TraceRouteResponse(BaseModel):
     host: str
     status: str
     total_hops: int
-    hops: List[TraceRouteHop]
+    hops: List[TracerouteHop]
 
 class WiFiUpdateRequest(BaseModel):
     ssid: str
