@@ -487,3 +487,63 @@ class GenieACSClient:
                 pass
 
             return {"status": "success", "message": "WAN configuration updated successfully"}
+
+    async def delete_host_or_station(self, device_id: str, mac_address: str) -> dict:
+        """Deletes host instance node and adds MAC to WLAN filter to drop connection."""
+        encoded_id = urllib.parse.quote(device_id)
+        
+        async with httpx.AsyncClient() as client:
+            # 1. Fetch full device tree to locate MAC instance
+            device = await self.get_device(device_id)
+            hosts_dict = device.get("InternetGatewayDevice", {}).get("LANDevice", {}).get("1", {}).get("Hosts", {}).get("Host", {})
+
+            target_instance = None
+            if isinstance(hosts_dict, dict):
+                for host_id, host_data in hosts_dict.items():
+                    if extract_param(host_data, "MACAddress", "").lower() == mac_address.lower():
+                        target_instance = host_id
+                        break
+
+            # 2. Delete instance node directly from GenieACS NBI
+            if target_instance:
+                delete_url = f"{self.base_url}/devices/{encoded_id}/tasks?connection_request"
+                delete_payload = {
+                    "name": "deleteObject",
+                    "objectName": f"InternetGatewayDevice.LANDevice.1.Hosts.Host.{target_instance}"
+                }
+                await client.post(delete_url, json=delete_payload, headers=self.headers, timeout=8.0)
+
+            # 3. Block Wi-Fi MAC station (optional drop rule)
+            filter_url = f"{self.base_url}/devices/{encoded_id}/tasks?connection_request"
+            filter_payload = {
+                "name": "setParameterValues",
+                "parameterValues": [
+                    ["InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.MACAddressControlEnabled", True, "xsd:boolean"]
+                ]
+            }
+            await client.post(filter_url, json=filter_payload, headers=self.headers, timeout=8.0)
+
+        return {"status": "success", "message": f"Host {mac_address} removed"}
+
+    async def clear_all_hosts(self, device_id: str) -> dict:
+        """Flushes all Host object instances from GenieACS."""
+        encoded_id = urllib.parse.quote(device_id)
+        async with httpx.AsyncClient() as client:
+            device = await self.get_device(device_id)
+            hosts_dict = device.get("InternetGatewayDevice", {}).get("LANDevice", {}).get("1", {}).get("Hosts", {}).get("Host", {})
+
+            if isinstance(hosts_dict, dict):
+                for host_id in list(hosts_dict.keys()):
+                    if str(host_id).isdigit():
+                        del_payload = {
+                            "name": "deleteObject",
+                            "objectName": f"InternetGatewayDevice.LANDevice.1.Hosts.Host.{host_id}"
+                        }
+                        await client.post(
+                            f"{self.base_url}/devices/{encoded_id}/tasks?connection_request", 
+                            json=del_payload, 
+                            headers=self.headers, 
+                            timeout=5.0
+                        )
+
+        return {"status": "success", "message": "All hosts cleared"}

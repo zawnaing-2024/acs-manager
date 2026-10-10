@@ -22,7 +22,7 @@ from .auth import (
 )
 from .genieacs_client import GenieACSClient, extract_param
 from .database import get_db, init_db
-from .models import ONUModel
+from .models import ONUModel, SuppressedHost
 from .schemas import (
     ONUList, WANConfig, WiFiConfig, LANHostResponse, LANHost,
     PingRequest, PingResponse, TraceRouteRequest, TraceRouteResponse, 
@@ -475,21 +475,100 @@ async def reboot_onu(
     return await client.reboot_device(decoded_id)
 
 
-@app.delete("/api/v1/onus/{device_id:path}", tags=["Actions"])
-async def delete_onu(
+@app.get("/api/v1/onus/{device_id:path}/hosts", response_model=LANHostResponse, tags=["LAN Hosts"])
+async def get_lan_hosts(
     device_id: str, 
     db: AsyncSession = Depends(get_db),
     client: GenieACSClient = Depends(get_genieacs_client),
     current_user: User = Depends(get_current_user)
 ):
-    decoded_id = urllib.parse.unquote(device_id)
-    await client.delete_device(decoded_id)
+    try:
+        decoded_id = urllib.parse.unquote(device_id)
 
-    # Remove from DB
-    result = await db.execute(select(ONUModel).where(ONUModel.device_id == decoded_id))
-    onu = result.scalar_one_or_none()
-    if onu:
-        await db.delete(onu)
+        # 1. Fetch suppressed MAC addresses for this device from MySQL
+        suppressed_res = await db.execute(
+            select(SuppressedHost.mac_address).where(SuppressedHost.device_id == decoded_id)
+        )
+        suppressed_macs = set(m.lower() for m in suppressed_res.scalars().all())
+
+        # 2. Fetch live hosts from GenieACS
+        device = await client.get_device(decoded_id)
+        hosts_dict = device.get("InternetGatewayDevice", {}).get("LANDevice", {}).get("1", {}).get("Hosts", {}).get("Host", {})
+
+        active_hosts = []
+        if isinstance(hosts_dict, dict):
+            for host_id, host_data in hosts_dict.items():
+                if not str(host_id).isdigit():
+                    continue
+
+                hostname = extract_param(host_data, "HostName", "Unknown Device")
+                ip_address = extract_param(host_data, "IPAddress", "0.0.0.0")
+                mac_address = extract_param(host_data, "MACAddress", "Unknown MAC")
+
+                # Filter out suppressed or invalid MACs
+                if ip_address and ip_address != "0.0.0.0" and str(mac_address).lower() not in suppressed_macs:
+                    active_hosts.append(LANHost(
+                        hostname=str(hostname),
+                        ip_address=str(ip_address),
+                        mac_address=str(mac_address)
+                    ))
+
+        return LANHostResponse(total_connected=len(active_hosts), hosts=active_hosts)
+    except Exception:
+        return LANHostResponse(total_connected=0, hosts=[])
+
+
+@app.delete("/api/v1/onus/{device_id:path}/hosts/{mac_address}", tags=["LAN Hosts"])
+async def remove_single_host(
+    device_id: str,
+    mac_address: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    decoded_id = urllib.parse.unquote(device_id)
+    clean_mac = mac_address.lower()
+
+    # Save to MySQL Suppressed Hosts table so it never returns on refresh
+    existing = await db.execute(
+        select(SuppressedHost).where(
+            SuppressedHost.device_id == decoded_id, 
+            SuppressedHost.mac_address == clean_mac
+        )
+    )
+    if not existing.scalar_one_or_none():
+        db.add(SuppressedHost(device_id=decoded_id, mac_address=clean_mac))
         await db.commit()
 
-    return {"status": "success", "message": "Device deleted from GenieACS and Database"}
+    return {"status": "success", "message": f"Host {mac_address} removed permanently"}
+
+
+@app.delete("/api/v1/onus/{device_id:path}/hosts", tags=["LAN Hosts"])
+async def remove_all_hosts(
+    device_id: str,
+    db: AsyncSession = Depends(get_db),
+    client: GenieACSClient = Depends(get_genieacs_client),
+    current_user: User = Depends(get_current_user)
+):
+    decoded_id = urllib.parse.unquote(device_id)
+
+    # Fetch current active hosts and add all MACs to SuppressedHost
+    device = await client.get_device(decoded_id)
+    hosts_dict = device.get("InternetGatewayDevice", {}).get("LANDevice", {}).get("1", {}).get("Hosts", {}).get("Host", {})
+
+    if isinstance(hosts_dict, dict):
+        for host_id, host_data in hosts_dict.items():
+            mac = extract_param(host_data, "MACAddress")
+            if mac:
+                clean_mac = str(mac).lower()
+                existing = await db.execute(
+                    select(SuppressedHost).where(
+                        SuppressedHost.device_id == decoded_id, 
+                        SuppressedHost.mac_address == clean_mac
+                    )
+                )
+                if not existing.scalar_one_or_none():
+                    db.add(SuppressedHost(device_id=decoded_id, mac_address=clean_mac))
+
+        await db.commit()
+
+    return {"status": "success", "message": "All connected host records cleared and suppressed"}

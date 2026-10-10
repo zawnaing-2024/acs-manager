@@ -331,6 +331,28 @@ const Dashboard = ({ user, onLogout }) => {
   const onlineOnus = onus.filter(onu => onu.status === 'Online').length;
   const offlineOnus = onus.filter(onu => onu.status === 'Offline').length;
 
+  const handleRemoveHost = async (macAddress) => {
+    if (!window.confirm(`Are you sure you want to remove device with MAC: ${macAddress}?`)) return;
+
+    try {
+      const encodedId = encodeURIComponent(selectedDevice);
+      const res = await fetch(`/api/v1/onus/${encodedId}/hosts/${macAddress}`, {
+        method: 'DELETE',
+        headers: getAuthHeaders()
+      });
+
+      if (handleAuthError(res)) return;
+
+      // Filter out MAC address from React state
+      setHostsData(prev => ({
+        total_connected: Math.max(0, prev.total_connected - 1),
+        hosts: prev.hosts.filter(h => h.mac_address.toLowerCase() !== macAddress.toLowerCase())
+      }));
+
+    } catch (err) {
+      alert(`Error removing host: ${err.message}`);
+    }
+  };
   return (
     <div className="d-flex flex-column" style={{ backgroundColor: '#f4f6f8', minHeight: '100vh' }}>
       {/* Header Navbar */}
@@ -677,6 +699,7 @@ const Dashboard = ({ user, onLogout }) => {
                     </div>
                   ) : (
                     <div className="row g-4">
+                      {/* Left Column: Wi-Fi & WAN */}
                       <div className="col-lg-5">
                         
                         {/* Editable Wi-Fi Card */}
@@ -829,20 +852,50 @@ const Dashboard = ({ user, onLogout }) => {
                         </div>
                       </div>
 
-                      {/* Connected Hosts */}
+                      {/* Right Column: Connected Devices with Remove and Remove All */}
                       <div className="col-lg-7">
                         <div className="card border-0 shadow-sm rounded-4 h-100">
-                          <div className="card-header bg-white border-bottom pt-4 pb-3 d-flex justify-content-between align-items-center">
+                          <div className="card-header bg-white border-bottom pt-4 pb-3 d-flex justify-content-between align-items-center flex-wrap gap-2">
                             <div className="d-flex align-items-center">
                               <div className="bg-success bg-opacity-10 text-success p-2 rounded-3 me-3">
                                 <i className="bi bi-pc-display fs-5"></i>
                               </div>
                               <h6 className="mb-0 fw-bold">Connected Devices</h6>
                             </div>
-                            <span className="badge bg-success bg-opacity-10 text-success border border-success rounded-pill px-3 py-2">
-                              {hostsData?.total_connected || 0} Active
-                            </span>
+                            
+                            <div className="d-flex align-items-center gap-2">
+                              <span className="badge bg-success bg-opacity-10 text-success border border-success rounded-pill px-3 py-2">
+                                {hostsData?.total_connected || 0} Active
+                              </span>
+
+                              {/* Remove All Button */}
+                              {hostsData?.hosts?.length > 0 && (
+                                <button
+                                  type="button"
+                                  className="btn btn-outline-danger btn-sm rounded-pill px-3 fw-semibold"
+                                  title="Clear all connected devices"
+                                  onClick={async () => {
+                                    if (!window.confirm("Are you sure you want to remove ALL connected devices?")) return;
+                                    try {
+                                      const encodedId = encodeURIComponent(selectedDevice);
+                                      const res = await fetch(`/api/v1/onus/${encodedId}/hosts`, {
+                                        method: 'DELETE',
+                                        headers: getAuthHeaders()
+                                      });
+                                      if (handleAuthError(res)) return;
+                                      setHostsData({ total_connected: 0, hosts: [] });
+                                      alert("All connected host records cleared!");
+                                    } catch (err) {
+                                      alert(`Failed to remove hosts: ${err.message}`);
+                                    }
+                                  }}
+                                >
+                                  <i className="bi bi-trash3-fill me-1"></i> Remove All
+                                </button>
+                              )}
+                            </div>
                           </div>
+
                           <div className="card-body p-0">
                             {hostsData?.hosts?.length === 0 ? (
                               <div className="text-center py-5">
@@ -857,6 +910,7 @@ const Dashboard = ({ user, onLogout }) => {
                                       <th className="px-4 py-3 text-muted fw-semibold">Hostname</th>
                                       <th className="py-3 text-muted fw-semibold">IP Address</th>
                                       <th className="py-3 text-muted fw-semibold">MAC Address</th>
+                                      <th className="py-3 text-end pe-4 text-muted fw-semibold">Action</th>
                                     </tr>
                                   </thead>
                                   <tbody>
@@ -878,6 +932,33 @@ const Dashboard = ({ user, onLogout }) => {
                                         <td className="py-3 font-monospace text-muted small">
                                           {host.mac_address}
                                         </td>
+                                        <td className="py-3 text-end pe-4">
+                                          <button
+                                            type="button"
+                                            className="btn btn-sm btn-outline-danger border-0 rounded-circle p-2"
+                                            title="Remove Device"
+                                            onClick={async () => {
+                                              if (!window.confirm(`Remove ${host.hostname || host.mac_address}?`)) return;
+                                              try {
+                                                const encodedId = encodeURIComponent(selectedDevice);
+                                                const res = await fetch(`/api/v1/onus/${encodedId}/hosts/${host.mac_address}`, {
+                                                  method: 'DELETE',
+                                                  headers: getAuthHeaders()
+                                                });
+                                                if (handleAuthError(res)) return;
+                                                
+                                                setHostsData(prev => ({
+                                                  total_connected: Math.max(0, prev.total_connected - 1),
+                                                  hosts: prev.hosts.filter(h => h.mac_address !== host.mac_address)
+                                                }));
+                                              } catch (err) {
+                                                alert(`Error removing host: ${err.message}`);
+                                              }
+                                            }}
+                                          >
+                                            <i className="bi bi-x-circle-fill fs-6"></i>
+                                          </button>
+                                        </td>
                                       </tr>
                                     ))}
                                   </tbody>
@@ -887,6 +968,7 @@ const Dashboard = ({ user, onLogout }) => {
                           </div>
                         </div>
                       </div>
+
                     </div>
                   )}
                 </div>

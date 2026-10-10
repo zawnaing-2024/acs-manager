@@ -28,3 +28,12 @@ class ONUModel(Base):
     vlan_id = Column(Integer, default=0)
 
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class SuppressedHost(Base):
+    __tablename__ = "suppressed_hosts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    device_id = Column(String(255), nullable=False, index=True)
+    mac_address = Column(String(45), nullable=False, index=True)
+    created_at = Column(DateTime, server_default=func.now())
