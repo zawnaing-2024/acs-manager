@@ -563,56 +563,26 @@ const Dashboard = ({ user, onLogout }) => {
                   )}
 
                   {traceResult && (
-                    <div className="card border-0 shadow-sm rounded-4 p-4 bg-white">
+                    <div className="card border-0 shadow-sm rounded-4 p-4 bg-white mt-3">
                       <h6 className="fw-bold border-bottom pb-2 mb-3 text-primary d-flex justify-content-between align-items-center">
-                        <span><i className="bi bi-signpost-split me-2"></i> Traceroute Results</span>
-                        <span className="badge bg-primary rounded-pill px-3 py-2">{traceResult.total_hops} Hops Completed</span>
+                        <span><i className="bi bi-terminal-fill me-2"></i> ONU Traceroute Console</span>
+                        <span className="badge rounded-pill bg-success">
+                          {traceResult.total_hops} Hops
+                        </span>
                       </h6>
-                      
-                      <div className="mb-3 small text-muted font-monospace bg-dark p-2 rounded-3" style={{ color: '#00ff66' }}>
-                        Diagnostics State: {traceResult.status}
-                      </div>
 
-                      <div className="table-responsive">
-                        <table className="table table-sm table-hover align-middle small font-monospace mb-0">
-                          <thead className="table-light">
-                            <tr>
-                              <th style={{ width: '80px' }}>Hop</th>
-                              <th>IP Address / Host</th>
-                              <th>RTT (ms)</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {traceResult.hops.length === 0 ? (
-                              <tr>
-                                <td colSpan="3" className="text-center text-muted py-4">
-                                  <i className="bi bi-exclamation-circle text-warning fs-5 d-block mb-1"></i>
-                                  No hops returned yet (State: {traceResult.status}). Try testing again.
-                                </td>
-                              </tr>
-                            ) : (
-                              traceResult.hops.map((h) => (
-                                <tr key={h.hop_number}>
-                                  <td className="fw-bold text-primary">#{h.hop_number}</td>
-                                  <td>
-                                    {h.host_address === '*' || !h.host_address ? (
-                                      <span className="text-muted fst-italic">* Request timed out</span>
-                                    ) : (
-                                      <span className="fw-semibold text-dark">{h.host_address}</span>
-                                    )}
-                                  </td>
-                                  <td>
-                                    {h.rtt_ms === '*' || !h.rtt_ms ? (
-                                      <span className="badge bg-light text-muted border">*</span>
-                                    ) : (
-                                      <span className="badge bg-light text-dark border px-2 py-1">{h.rtt_ms} ms</span>
-                                    )}
-                                  </td>
-                                </tr>
-                              ))
-                            )}
-                          </tbody>
-                        </table>
+                      {/* Terminal Console Box */}
+                      <div 
+                        className="p-3 rounded-3 font-monospace small shadow-inner" 
+                        style={{ 
+                          backgroundColor: '#0d1117', 
+                          color: '#39ff14', 
+                          minHeight: '200px', 
+                          whiteSpace: 'pre-wrap', 
+                          lineHeight: '1.5' 
+                        }}
+                      >
+                        {traceResult.terminal_output || `traceroute to ${traceResult.host} statistics:\nTotal Hops: ${traceResult.total_hops}`}
                       </div>
                     </div>
                   )}
@@ -627,7 +597,6 @@ const Dashboard = ({ user, onLogout }) => {
           <div className="modal-backdrop fade show" onClick={() => setShowDiagModal(false)}></div>
         </>
       )}
-
       {/* Details & Wi-Fi Modal */}
       {showModal && (
         <>

@@ -74,7 +74,8 @@ class TraceRouteResponse(BaseModel):
     status: str
     total_hops: int
     hops: List[TracerouteHop]
-
+    terminal_output: Optional[str] = None
+    
 class WiFiUpdateRequest(BaseModel):
     ssid: str
     password: str
