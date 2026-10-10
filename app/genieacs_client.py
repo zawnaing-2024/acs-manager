@@ -200,12 +200,12 @@ class GenieACSClient:
             }
         
     async def run_traceroute(self, device_id: str, host: str):
-        """Execute TR-069 TraceRouteDiagnostics with recursive hop tree extraction."""
+        """Execute TR-069 TraceRouteDiagnostics with dynamic async polling until complete."""
         encoded_id = urllib.parse.quote(device_id)
         trace_path = "InternetGatewayDevice.TraceRouteDiagnostics"
 
         async with httpx.AsyncClient() as client:
-            # 1. Clear any stuck tasks in GenieACS queue
+            # 1. Clear stuck tasks in GenieACS queue
             try:
                 await client.delete(f"{self.base_url}/devices/{encoded_id}/tasks", headers=self.headers, timeout=5.0)
             except Exception:
@@ -226,28 +226,33 @@ class GenieACSClient:
             res = await client.post(url, json=payload, headers=self.headers, timeout=12.0)
             res.raise_for_status()
 
-            # 3. Wait for execution (traceroute takes ~8 to 10 seconds)
-            await asyncio.sleep(8.0)
+            # 3. Dynamic Polling Loop (Check every 3s, max 21s total wait)
+            state = "Requested"
+            device = {}
 
-            # 4. Force refresh of the TraceRoute tree from the physical ONU
-            try:
-                await self.refresh_object(device_id, trace_path)
-                await asyncio.sleep(2.0)
-            except Exception as e:
-                print(f"[Backend] Traceroute refresh notice: {e}")
+            for attempt in range(7):
+                await asyncio.sleep(3.0)
 
-            device = await self.get_device(device_id)
-            state = str(extract_param(device, f"{trace_path}.DiagnosticsState", "Complete"))
+                # Request live parameter sync from ONU
+                try:
+                    await self.refresh_object(device_id, trace_path)
+                except Exception:
+                    pass
 
-            # 5. Recursive Hop Parser
+                device = await self.get_device(device_id)
+                state = str(extract_param(device, f"{trace_path}.DiagnosticsState", "Requested"))
+
+                # Exit poll early once physical ONU completes the diagnostic
+                if state == "Complete":
+                    break
+
+            # 4. Extract Hops from final device object
             hops_data = []
 
             def find_hops(node, current_path=""):
-                """Recursively traverse device dict to locate any hop structures."""
                 if not isinstance(node, dict):
                     return
 
-                # Check if current node is a Hop structure
                 has_host = any(k in node for k in ["HopHost", "HopAddress", "HopHostAddress"])
                 has_rtt = any(k in node for k in ["HopRTTimes", "HopRTT", "HopResponseTime"])
 
@@ -286,8 +291,7 @@ class GenieACSClient:
             trace_dict = device.get("InternetGatewayDevice", {}).get("TraceRouteDiagnostics", {})
             find_hops(trace_dict)
 
-            hops_data.sort(key=lambda x: x["hop_number"])
-
+            # Deduplicate and sort hops
             unique_hops = {}
             for h in hops_data:
                 unique_hops[h["hop_number"]] = h
